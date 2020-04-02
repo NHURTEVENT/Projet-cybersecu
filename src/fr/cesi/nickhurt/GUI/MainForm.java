@@ -1,5 +1,9 @@
 package fr.cesi.nickhurt.GUI;
 
+import com.google.common.util.concurrent.*;
+import fr.cesi.nickhurt.DAO.DBDAO;
+import fr.cesi.nickhurt.DAO.fileDAO;
+
 import javax.swing.*;
 import javax.swing.border.LineBorder;
 import java.awt.*;
@@ -16,6 +20,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.Map;
+import java.util.concurrent.*;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -38,6 +43,8 @@ public class MainForm extends JFrame{
     private byte[] fileContent;
     public int nbOfDictionaryRequests;
     public int nbOfDictionaryComparisons;
+    public String[] dictionary;
+    public Instant startTime;
 
     public MainForm() {
         //filePanel = new FilePanel();
@@ -89,59 +96,9 @@ public class MainForm extends JFrame{
         bruteForceButton.addActionListener(e -> {
             //testDecodeTime();
 //            String[] keys = generateKeys(6);
-            //TODO decrypt while testing so as to not decrypt a whole file for nothing
-//            for(int i =98689000; i< getNumberOfKeys(6); i++) {
-            Instant start = Instant.now();
-//            for(int i =98680000; i< getNumberOfKeys(6); i++) {
-            String alphabet = "abcdefghijklmnopqrstuvwxyz";
-//            for(int i =309000000; i< getNumberOfKeys(6); i++) {
-            for(int i = 0; i< getNumberOfKeys(6); i++) {
-//            for(int i =0; i< getNumberOfKeys(6); i++) {
-                String key = getKey(i, alphabet);
-                //System.out.println(key);
-                String decodedSubMessage = decodeByte(key, Arrays.copyOfRange(fileContent, 0, 150));
-                if(i%500000 ==0) {
-                    System.out.println("tried "+i+" keys");
-                    Instant currentTime = Instant.now();
-                    Duration timeElapsed = Duration.between(start, currentTime);
-                    System.out.println(nbOfDictionaryRequests+" dictionary requests");
-                    System.out.println(nbOfDictionaryComparisons +" dictionary comparisons");
-                    System.out.println("Time taken: "+ timeElapsed.toMillis()/1000 +" seconds");
 
-                }
+            bruteForce();
 
-                if(!frequencyPretest(decodedSubMessage)) {
-//                    System.out.println("continue");
-                    continue;
-                }
-
-                //TODO je vais surement juste décoder les 200-500-1k premiers chars anyway
-                //String decodedMessage = decodeByte(key, fileContent);
-                String decodedMessage = decodedSubMessage;
-                if (testFileCoherence(decodedMessage)) {
-                    System.out.println("File deciphered with success. key :"+key);
-                    Instant currentTime = Instant.now();
-                    Duration timeElapsed = Duration.between(start, currentTime);
-                    System.out.println("tried "+i+" keys");
-                    System.out.println(nbOfDictionaryRequests+" dictionary requests");
-                    System.out.println(nbOfDictionaryComparisons +" dictionary comparisons");
-                    System.out.println("Time taken: "+ timeElapsed.toMillis()/1000 +" seconds");
-                    write(decodedMessage);
-                    break;
-                } else {
-                    if(i%1000 ==0) {
-                        System.out.println("wrong key: "+key);
-                        System.out.println("tried "+i+" keys");
-                        System.out.println(nbOfDictionaryRequests+" dictionary requests");
-                        System.out.println(nbOfDictionaryComparisons +" dictionary comparisons");
-                    }
-                    if(i%10000 == 0) {
-                        Instant currentTime = Instant.now();
-                        Duration timeElapsed = Duration.between(start, currentTime);
-                        System.out.println("Time taken: "+ timeElapsed.toMillis()/1000 +" seconds");
-                    }
-                }
-            }
 //            for(String key: keys) {
 //                String decodedMessage = decodeByte(key, fileContent);
 //                if (testFileCoherence(decodedMessage)) {
@@ -161,7 +118,8 @@ public class MainForm extends JFrame{
 
             fc.showOpenDialog(explorerButton);
             filePath = fc.getSelectedFile().getAbsolutePath();
-            fileContent = readFileByte(filePath);
+//            fileContent = readFileByte(filePath);
+            fileContent = fileDAO.getInstance().getFileContent(filePath);
             System.out.println("displayed bytes");
         });
 
@@ -171,7 +129,7 @@ public class MainForm extends JFrame{
     }
 
     public void testDecodeTime() {
-        Instant start = Instant.now();
+        startTime = Instant.now();
         String alphabet = "abcdefghijklmnopqrstuvwxyz";
         for (int i = 0; i < getNumberOfKeys(6); i++) {
             String key = getKey(i, alphabet);
@@ -179,7 +137,7 @@ public class MainForm extends JFrame{
             if(i%10000 ==0) {
                 System.out.println("tried "+i+" keys");
                 Instant currentTime = Instant.now();
-                Duration timeElapsed = Duration.between(start, currentTime);
+                Duration timeElapsed = Duration.between(startTime, currentTime);
                 System.out.println("Time taken: "+ timeElapsed.toMillis()/1000 +" seconds");
             }
         }
@@ -330,13 +288,111 @@ public class MainForm extends JFrame{
         }
     }
 
-    public void bruteForce(ArrayList<Integer> encodedMessage) {
+    public ListenableFuture<String> bruteForceSubprocess(ListeningExecutorService service, int startIndex, int nbOfThreads) {
+        ListenableFuture<String> future = service.submit(new Callable<String>() {
 
+            @Override
+            public String call() throws Exception {
+                for(int i = startIndex; i< getNumberOfKeys(6); i+=nbOfThreads) {
+                    if (Thread.currentThread().isInterrupted()) { break; }
+                    String alphabet = "abcdefghijklmnopqrstuvwxyz";
+                    String key = getKey(i, alphabet);
+                    //System.out.println(key);
+                    String decodedSubMessage = decodeByte(key, Arrays.copyOfRange(fileContent, 0, 150));
+                    if(i%1000000 ==690159) {
+                        notifyProgress(i);
+                    }
+
+                    if(!frequencyPretest(decodedSubMessage)) {
+                        continue;
+                    }
+                    String decodedMessage = decodedSubMessage;
+                    if (testFileCoherence(decodedMessage)) {
+                        notifyProgress(i);
+                        write(decodedMessage);
+                        return key;
+                    }
+                }
+                throw new Exception("Subprocess "+startIndex+" finished without finding key");
+            }
+        });
+        return future;
+    }
+
+    public void bruteForce() {
+        startTime = Instant.now();
+        ListeningExecutorService service = MoreExecutors.listeningDecorator(Executors.newFixedThreadPool(4));
+        ArrayList<ListenableFuture<String>> futureList = new ArrayList<>();
+        int nbOfThreads = 10;
+        for(int i = 0; i < nbOfThreads; i++){
+            ListenableFuture<String> subProcess = bruteForceSubprocess(service, i, nbOfThreads);
+            futureList.add(subProcess);
+            Futures.addCallback(subProcess, new FutureCallback<String>() {
+                @Override
+                public void onSuccess(String s) {
+                    System.out.println("key given by thread : "+s);
+                    System.out.println("killing any remaining threads");
+                    service.shutdown();
+                }
+
+                @Override
+                public void onFailure(Throwable throwable) {
+                    System.out.println("thread failed or finished without success");
+                    System.out.println(throwable.getMessage());
+                }
+            });
+        }
+
+//        startTime = Instant.now();
+////        DBDAO.getInstance().populateDatabase(getDictionary());
+//        String alphabet = "abcdefghijklmnopqrstuvwxyz";
+//            for(int i = 0; i< getNumberOfKeys(6); i++) {
+////        for(int i = 0; i< getNumberOfKeys(6); i++) {
+//            String key = getKey(i, alphabet);
+//            //System.out.println(key);
+//            String decodedSubMessage = decodeByte(key, Arrays.copyOfRange(fileContent, 0, 150));
+//            if(i%500000 ==0) {
+//                notifyProgress(i);
+//            }
+//
+//            if(!frequencyPretest(decodedSubMessage)) {
+////                    System.out.println("continue");
+//                continue;
+//            }
+//
+//            //String decodedMessage = decodeByte(key, fileContent);
+//            String decodedMessage = decodedSubMessage;
+//            if (testFileCoherence(decodedMessage)) {
+//                System.out.println("File deciphered with success. key :"+key);
+//                notifyProgress(i);
+//                write(decodedMessage);
+//                break;
+//            } else {
+//                if(i%1000 ==0) {
+//                    System.out.println("wrong key: "+key);
+//                    System.out.println("tried "+i+" keys");
+//                    System.out.println(nbOfDictionaryRequests+" dictionary requests");
+//                    System.out.println(nbOfDictionaryComparisons +" dictionary comparisons");
+//                }
+//                if(i%10000 == 0) {
+//                    Instant currentTime = Instant.now();
+//                    Duration timeElapsed = Duration.between(startTime, currentTime);
+//                    System.out.println("Time taken: "+ timeElapsed.toMillis()/1000 +" seconds");
+//                }
+//            }
+//        }
+    }
+
+    public void notifyProgress(int keyNumber) {
+        System.out.println("tried "+keyNumber+" keys");
+        Instant currentTime = Instant.now();
+        Duration timeElapsed = Duration.between(startTime, currentTime);
+        System.out.println(nbOfDictionaryRequests+" dictionary requests");
+        System.out.println(nbOfDictionaryComparisons +" dictionary comparisons");
+        System.out.println("Time taken: "+ timeElapsed.toMillis()/1000 +" seconds");
     }
 
     public String getKey(int i, String alphabet) {
-//        return i < 0 ? "" : getKey((i / 26) - 1) + (char) (97 + i % 26);
-//        char[] alphabet = new String("abcdefghijklmnopqrstuvwxyz");
         int alphabetSize = alphabet.length();
         return i < 0 ? "" : getKey((i / alphabetSize)-1, alphabet) + alphabet.toCharArray()[i % 26];
     }
@@ -389,16 +445,10 @@ public class MainForm extends JFrame{
         int totalWords = 0;
         int matchedWords = 0;
         int unmatchedWords = 0;
-//        Map<Integer, Long> lettersCount = countLetters(words);
-//
-//        for( Map.Entry<Integer, Long> entry: lettersCount.entrySet()){
-//            System.out.println((char)entry.getKey().intValue());
-//            System.out.println(entry.getKey().longValue());
-//        }
 
         String[] words = decodedMessage.split(" |\\.|,|'|\\(|\\)|\\n|\\r");
         if(words.length < 6) {
-//            System.out.println("less than 5 words in file, unlikely");
+//            System.out.println("less than 5 words in 100 first chars, unlikely");
             return false;
         }
         for(String word : words) {
@@ -428,15 +478,19 @@ public class MainForm extends JFrame{
                     validWords++;
                     //System.out.println("will compare with dictionary :"+ word);
                     boolean matched = compareToDictionary(word);
+//                    nbOfDictionaryRequests = fileDAO.getInstance().getNbOfDictionaryRequests();
+//                    nbOfDictionaryComparisons= fileDAO.getInstance().getNbOfDictionaryComparisons();
+                    nbOfDictionaryRequests = DBDAO.getInstance().getNbOfDictionaryRequests();
+                    nbOfDictionaryComparisons= DBDAO.getInstance().getNbOfDictionaryComparisons();
 //                    boolean matched = compareToTextFile(word);
                     if(matched) matchedWords++; else unmatchedWords++;
                     //System.out.println(matched+" matched = "+matchedWords+" unmatched= "+unmatchedWords);
 
 
-                    if(validWords > 10 && (float)matchedWords/validWords < 0.3) {
+                    if(validWords > 9 && (float)matchedWords/validWords < 0.3) {
                         //System.out.println("didn't match enough words, key discarded");
                         return false;
-                    } else if (validWords > 10 && (float)matchedWords/validWords > 0.5){
+                    } else if (validWords > 9 && (float)matchedWords/validWords > 0.5){
                         System.out.println("over 50% of the words matched, found the key !");
                         return true;
                     }
@@ -444,15 +498,16 @@ public class MainForm extends JFrame{
                 }
             }
         }
-        System.out.println("done: "+totalChars+" chars, "+invalidChars+" invalid chars ("+(float)invalidChars/totalChars+"%), "+invalidWords+" invalid words ("+(float)invalidWords/words.length+"%)");
-        System.out.println("Could no conclude on file validity.");
+        //System.out.println("done: "+totalChars+" chars, "+invalidChars+" invalid chars ("+(float)invalidChars/totalChars+"%), "+invalidWords+" invalid words ("+(float)invalidWords/words.length+"%), "+matchedWords+" matched");
+        //System.out.println("Could not conclude on file validity.");
         return false;
     }
 
     public boolean frequencyPretest(String message) {
 
-        String testSubset = message.substring(0,150);
-        String[] words = testSubset.split(" |\\.|,|'|\\(|\\)|\\n|\\r");
+//        String testSubset = message.substring(0,150);
+//        String[] words = testSubset.split(" |\\.|,|'|\\(|\\)|\\n|\\r");
+        String[] words = message.split(" |\\.|,|'|\\(|\\)|\\n|\\r");
         Map<Integer, Long> letterCount = countLetters(words);
 
         if(!(letterCount.containsKey(101) && letterCount.containsKey(115) && letterCount.containsKey(97))) {
@@ -463,15 +518,15 @@ public class MainForm extends JFrame{
         long numberOfS = letterCount.get(115);
         long numberOfA = letterCount.get(97);
 
-        float percentageE = (float)numberOfE/150; // 14.7% in french
-        float percentageS = (float)numberOfS/150; // 7.9% in french
-        float percentageA = (float)numberOfA/150; // 7.6% in french
+        float percentageE = (float)numberOfE/message.length(); // 14.7% in french
+        float percentageS = (float)numberOfS/message.length(); // 7.9% in french
+        float percentageA = (float)numberOfA/message.length(); // 7.6% in french
         float totalPercentage = percentageE+ percentageS+ percentageA; // 30.2% in french
 
         if(totalPercentage<0.2) { //50% uncertainty should be plenty to avoid false negative
             return false;
         } else {
-//            System.out.println("OVER 20%"+totalPercentage);
+            //System.out.println("OVER 20%"+totalPercentage);
             return true;
         }
     }
@@ -485,6 +540,17 @@ public class MainForm extends JFrame{
     }
 
     public boolean compareToDictionary(String wordToCompare) {
+//        return compareToTextFile(wordToCompare);
+//        return fileDAO.getInstance().checkWord(wordToCompare);
+        return DBDAO.getInstance().checkWord(wordToCompare);
+    }
+
+    public boolean compareToDatabase(String wordToCompare) {
+        return DBDAO.getInstance().checkWord(wordToCompare);
+    }
+
+    //TODO implement a DAO
+    public boolean compareToTextFile(String wordToCompare) {
         String[] dictionary = getDictionary();
         nbOfDictionaryRequests++;
         for( String dictionaryWord: dictionary) {
@@ -501,12 +567,6 @@ public class MainForm extends JFrame{
         return false;
     }
 
-    //TODO implement a DAO
-    public boolean compareToTextFile(String wordToCompare) {
-        nbOfDictionaryRequests++;
-        return false;
-    }
-
     public int compareDictionaryToFile(String[] wordsToCompare) {
         for(String word: wordsToCompare) {
             for(String dictionaryWord: getDictionary()) {
@@ -519,28 +579,29 @@ public class MainForm extends JFrame{
     }
 
     public String[] getDictionary() {
-        ArrayList<String> dictionary = new ArrayList<>();
-        try {
-            FileReader fr= new FileReader(DICTIONARY_PATH);   //reads the file
-            BufferedReader br= new BufferedReader(fr);  //creates a buffering character input stream
-            StringBuffer sb= new StringBuffer();    //constructs a string buffer with no characters
-            String line;
-            while((line=br.readLine())!=null) {
-//                Scanner txtscan = new Scanner(new File(DICTIONARY_PATH));
-//            while(txtscan.hasNextLine()){
-//                String str = txtscan.nextLine();
-//                dictionary.add(str);
-                dictionary.add(line);
+//        if(dictionary == null) {
+            ArrayList<String> dictionaryList = new ArrayList<>();
+            try {
+                FileInputStream inputFile = new FileInputStream(DICTIONARY_PATH);
+                InputStreamReader ir = new InputStreamReader(inputFile, "Cp1252");
+                BufferedReader br = new BufferedReader(ir);  //creates a buffering character input stream
+                String line;
+                while ((line = br.readLine()) != null) {
+                    dictionaryList.add(line);
+                }
+                String[] dictionaryArray = new String[dictionaryList.size()];
+                dictionary = dictionaryList.toArray(dictionaryArray);
+                return dictionary;
+            } catch (FileNotFoundException e) {
+                e.printStackTrace();
+                return null;
+            } catch (IOException ex) {
+                ex.printStackTrace();
+                return null;
             }
-            String[] dictionaryArray = new String[dictionary.size()];
-            return dictionary.toArray(dictionaryArray);
-        } catch (FileNotFoundException e) {
-            e.printStackTrace();
-            return null;
-        } catch (IOException ex) {
-            ex.printStackTrace();
-            return null;
-        }
+//        } else {
+//            return dictionary;
+//        }
     }
 
     public void test(String message) {
